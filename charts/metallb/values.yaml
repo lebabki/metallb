@@ -276,12 +276,7 @@ speaker:
   # ignore the exclude-from-external-loadbalancer label
   ignoreExcludeLB: false
 
-  # -- Additional cmdline arguments passed verbatim to the speaker
-  # container. Each entry is rendered as a separate args list element.
-  # Useful for passing flags such as --ml-probe-timeout,
-  # --ml-suspicion-mult, --event-nodeassigned-mode and
-  # --disable-bgp-status-controller without patching this template
-  # per flag.
+  # -- Additional cmdline arguments appended verbatim to the speaker container args.
   extraArgs: []
 
   image:
