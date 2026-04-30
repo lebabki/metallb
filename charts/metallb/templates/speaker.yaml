@@ -280,6 +280,9 @@ spec:
         {{- if .Values.frrk8s.external }}
         - --frrk8s-namespace={{ required "namespace is required when frrk8s is external" .Values.frrk8s.namespace }}
         {{- end }}
+        {{- with .Values.speaker.extraArgs }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         env:
         - name: METALLB_NODE_NAME
           valueFrom:

@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	version   = "0.15.3"
+	version   = "0.15.3-pinely.1"
 	gitCommit string // Provided by ldflags during build
 	gitBranch string // Provided by ldflags during build
 )
