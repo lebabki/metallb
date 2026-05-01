@@ -5,12 +5,12 @@ resources:
 - ../native
 images:
   # The kubebuilder GCR registry stopped serving
-  # gcr.io/kubebuilder/kube-rbac-proxy. Redirect to the actively
-  # maintained brancz fork; the v0.13.1 default in the upstream
-  # frr-k8s manifests would otherwise fail to pull at runtime.
+  # gcr.io/kubebuilder/kube-rbac-proxy. Redirect to the
+  # kubernetes-sigs mirror on registry.k8s.io that ships the same
+  # images; the original tag from the upstream frr-k8s manifests
+  # is preserved.
   - name: gcr.io/kubebuilder/kube-rbac-proxy
-    newName: quay.io/brancz/kube-rbac-proxy
-    newTag: v0.18.0
+    newName: registry.k8s.io/kubebuilder/kube-rbac-proxy
 patchesStrategicMerge:
 - speaker-patch.yaml
 - controller-patch.yaml

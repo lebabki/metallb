@@ -55,8 +55,8 @@ prometheus:
 
   # the image to be used for the kuberbacproxy container
   rbacProxy:
-    repository: quay.io/brancz/kube-rbac-proxy
-    tag: v0.18.0
+    repository: registry.k8s.io/kubebuilder/kube-rbac-proxy
+    tag: v0.12.0
     pullPolicy:
 
   # Prometheus Operator PodMonitors
@@ -383,12 +383,12 @@ frrk8s:
 # Overrides applied to the vendored frr-k8s subchart. The subchart's own
 # default points the kube-rbac-proxy sidecar at the deprecated
 # gcr.io/kubebuilder/kube-rbac-proxy registry, which no longer serves
-# the v0.12.0 tag. Pin to the brancz fork that hosts maintained tags.
+# its tags. Redirect to the kubernetes-sigs mirror on registry.k8s.io
+# that ships the same images.
 frr-k8s:
   prometheus:
     rbacProxy:
-      repository: quay.io/brancz/kube-rbac-proxy
-      tag: v0.18.0
+      repository: registry.k8s.io/kubebuilder/kube-rbac-proxy
 
 # networkpolicies
 networkpolicies:
