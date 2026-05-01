@@ -3,6 +3,14 @@ kind: Kustomization
 resources:
 - https://github.com/metallb/frr-k8s/config/prometheus/?timeout=120&ref=v0.0.21
 - ../prometheus-native
+images:
+  # The kubebuilder GCR registry stopped serving
+  # gcr.io/kubebuilder/kube-rbac-proxy. Redirect to the actively
+  # maintained brancz fork; the v0.13.1 default in the upstream
+  # frr-k8s manifests would otherwise fail to pull at runtime.
+  - name: gcr.io/kubebuilder/kube-rbac-proxy
+    newName: quay.io/brancz/kube-rbac-proxy
+    newTag: v0.18.0
 patchesStrategicMerge:
 - speaker-patch.yaml
 - controller-patch.yaml
