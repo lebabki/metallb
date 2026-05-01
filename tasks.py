@@ -1076,10 +1076,14 @@ def bumprelease(ctx, version, previous_version):
 def test(ctx):
     """Run unit tests."""
     envtest_asset_dir = os.getcwd() + "/dev-env/unittest"
-    # 1.30.x resolves to the latest published envtest release in the 1.30
-    # series via the controller-tools envtest-releases index. Override
-    # with ENVTEST_K8S_VERSION (e.g. "1.32.0") to pin a specific version.
-    k8s_version = os.environ.get("ENVTEST_K8S_VERSION", "1.30.x")
+    # The constraint resolves to the most recent kubebuilder-tools release
+    # published in the controller-tools envtest-releases index up to (but
+    # not including) 1.36.0. The 1.36 apiserver tightened CRD validation
+    # for integer fields with format=int32, which makes the vendored
+    # frr-k8s 0.0.21 CRDs reject test fixtures. Override with
+    # ENVTEST_K8S_VERSION (e.g. "1.32.0" or "latest") to pin a specific
+    # version once the vendored CRDs catch up.
+    k8s_version = os.environ.get("ENVTEST_K8S_VERSION", "<1.36.0")
     run(
         "{}/setup-envtest.sh {}".format(envtest_asset_dir, envtest_asset_dir), echo=True
     )
