@@ -486,8 +486,7 @@ def dev_env(
         }
 
         if with_api_audit:
-            config["nodes"][0]["kubeadmConfigPatches"] = [
-                r"""kind: ClusterConfiguration
+            config["nodes"][0]["kubeadmConfigPatches"] = [r"""kind: ClusterConfiguration
 apiServer:
   # enable auditing flags on the API server
   extraArgs:
@@ -504,8 +503,7 @@ apiServer:
       hostPath: "/var/log/kubernetes"
       mountPath: "/var/log/kubernetes"
       readOnly: false
-      pathType: DirectoryOrCreate"""
-            ]
+      pathType: DirectoryOrCreate"""]
             config["nodes"][0]["extraMounts"] = [
                 {
                     "hostPath": "./dev-env/audit-policy.yaml",
@@ -560,12 +558,28 @@ apiServer:
 
     frr_k8s_ns = "frr-k8s-system"
     if bgp_type == "frr-k8s-external":
+        # The upstream all-in-one YAML still references
+        # gcr.io/kubebuilder/kube-rbac-proxy, which the kubebuilder GCR
+        # registry no longer serves. Download the manifest, rewrite the
+        # registry to the kubernetes-sigs mirror that ships the same
+        # images, then apply the rewritten copy.
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            frr_k8s_manifest_path = f.name
+            result = run(
+                "curl -sSfL https://raw.githubusercontent.com/metallb/frr-k8s/v0.0.21/config/all-in-one/frr-k8s.yaml",
+                hide=True,
+            )
+            f.write(
+                result.stdout.replace(
+                    "gcr.io/kubebuilder/kube-rbac-proxy",
+                    "registry.k8s.io/kubebuilder/kube-rbac-proxy",
+                )
+            )
         run(
-            "{} apply -f https://raw.githubusercontent.com/metallb/frr-k8s/v0.0.21/config/all-in-one/frr-k8s.yaml".format(
-                kubectl_path
-            ),
+            "{} apply -f {}".format(kubectl_path, frr_k8s_manifest_path),
             echo=True,
         )
+        os.unlink(frr_k8s_manifest_path)
         time.sleep(2)
         run(
             "{} -n {} wait --for=condition=Ready --all pods --timeout 300s".format(
@@ -1078,12 +1092,19 @@ def bumprelease(ctx, version, previous_version):
 def test(ctx):
     """Run unit tests."""
     envtest_asset_dir = os.getcwd() + "/dev-env/unittest"
-    k8s_version = "1.27.1"
+    # 1.35.x resolves to the most recent kubebuilder-tools release in the
+    # 1.35 series via the controller-tools envtest-releases index. The
+    # 1.36 series cannot be used yet: the 1.36 apiserver tightened CRD
+    # validation for integer fields with format=int32, which makes the
+    # vendored frr-k8s 0.0.21 CRDs reject test fixtures. Override with
+    # ENVTEST_K8S_VERSION (e.g. "1.32.0", "latest", or "<1.36.0") to
+    # pin a specific version once the vendored CRDs catch up.
+    k8s_version = os.environ.get("ENVTEST_K8S_VERSION", "1.35.x")
     run(
         "{}/setup-envtest.sh {}".format(envtest_asset_dir, envtest_asset_dir), echo=True
     )
     kubebuilder_assets = run(
-        "{}/bin/setup-envtest use {} --bin-dir {}/bin -p path".format(
+        "{}/bin/setup-envtest use '{}' --bin-dir {}/bin -p path".format(
             envtest_asset_dir, k8s_version, envtest_asset_dir
         )
     ).stdout.strip()

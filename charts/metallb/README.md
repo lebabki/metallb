@@ -1,6 +1,6 @@
 # metallb
 
-![Version: 0.0.0](https://img.shields.io/badge/Version-0.0.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v0.0.0](https://img.shields.io/badge/AppVersion-v0.0.0-informational?style=flat-square)
+![Version: 0.15.3](https://img.shields.io/badge/Version-0.15.3-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v0.15.3](https://img.shields.io/badge/AppVersion-v0.15.3-informational?style=flat-square)
 
 A network load-balancer implementation for Kubernetes using standard routing protocols
 
@@ -16,7 +16,7 @@ Kubernetes: `>= 1.19.0-0`
 
 | Repository | Name | Version |
 |------------|------|---------|
-|  | crds | 0.0.0 |
+|  | crds | 0.15.3 |
 | https://metallb.github.io/frr-k8s | frr-k8s | 0.0.21 |
 
 ## Values
@@ -61,6 +61,7 @@ Kubernetes: `>= 1.19.0-0`
 | controller.webhookMode | string | `"enabled"` |  |
 | crds.enabled | bool | `true` |  |
 | crds.validationFailurePolicy | string | `"Fail"` |  |
+| frr-k8s.prometheus.rbacProxy.repository | string | `"registry.k8s.io/kubebuilder/kube-rbac-proxy"` |  |
 | frrk8s.enabled | bool | `false` |  |
 | frrk8s.external | bool | `false` |  |
 | frrk8s.namespace | string | `""` |  |
@@ -104,7 +105,7 @@ Kubernetes: `>= 1.19.0-0`
 | prometheus.prometheusRule.staleConfig.labels.severity | string | `"warning"` |  |
 | prometheus.rbacPrometheus | bool | `true` |  |
 | prometheus.rbacProxy.pullPolicy | string | `nil` |  |
-| prometheus.rbacProxy.repository | string | `"gcr.io/kubebuilder/kube-rbac-proxy"` |  |
+| prometheus.rbacProxy.repository | string | `"registry.k8s.io/kubebuilder/kube-rbac-proxy"` |  |
 | prometheus.rbacProxy.tag | string | `"v0.12.0"` |  |
 | prometheus.scrapeAnnotations | bool | `false` |  |
 | prometheus.serviceAccount | string | `""` |  |
@@ -124,6 +125,7 @@ Kubernetes: `>= 1.19.0-0`
 | speaker.affinity | object | `{}` |  |
 | speaker.enabled | bool | `true` |  |
 | speaker.excludeInterfaces.enabled | bool | `true` |  |
+| speaker.extraArgs | list | `[]` | Additional cmdline arguments appended verbatim to the speaker container args. |
 | speaker.extraContainers | list | `[]` |  |
 | speaker.frr.enabled | bool | `true` |  |
 | speaker.frr.image.pullPolicy | string | `nil` |  |

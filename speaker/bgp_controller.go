@@ -401,6 +401,14 @@ func (c *bgpController) publishAds() (map[string][]*bgp.Advertisement, error) {
 func (c *bgpController) notifyAdsChanged(newAds map[string][]*bgp.Advertisement) {
 	changedSvcs := []string{} // the services that their advs changed
 	defer func() {
+		// Callback is nil when --disable-bgp-status-controller is set
+		// (no consumer for the bgpStatusChan). Returning early avoids a
+		// nil-pointer panic and is safe because the only consumer was
+		// the ServiceBGPStatusReconciler, which is not running in that
+		// mode.
+		if c.adsChangedCallback == nil {
+			return
+		}
 		for _, k := range changedSvcs {
 			c.adsChangedCallback(k)
 		}

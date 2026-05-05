@@ -89,8 +89,37 @@ func main() {
 		loadBalancerClass = flag.String("lb-class", "", "load balancer class. When enabled, metallb will handle only services whose spec.loadBalancerClass matches the given lb class")
 		ignoreLBExclude   = flag.Bool("ignore-exclude-lb", false, "ignore the exclude-from-external-load-balancers label")
 		frrK8sNamespace   = flag.String("frrk8s-namespace", os.Getenv("FRRK8S_NAMESPACE"), "the namespace frr-k8s is being deployed on")
+
+		// Per-tunable memberlist overrides. A zero value leaves the
+		// memberlist LAN/WAN default in place (LAN: 500ms/1s/4/3/200ms/30s/10s).
+		mlProbeTimeout     = flag.Duration("ml-probe-timeout", 0, "memberlist ProbeTimeout. Time to wait for an ack before flagging a probe as failed. 0 = stock default (LAN: 500ms)")
+		mlProbeInterval    = flag.Duration("ml-probe-interval", 0, "memberlist ProbeInterval. Frequency of probing nodes. 0 = stock default (LAN: 1s)")
+		mlGossipInterval   = flag.Duration("ml-gossip-interval", 0, "memberlist GossipInterval. Frequency of gossiping new info. 0 = stock default (LAN: 200ms)")
+		mlPushPullInterval = flag.Duration("ml-push-pull-interval", 0, "memberlist PushPullInterval. Frequency of full state sync. 0 = stock default (LAN: 30s)")
+		mlTCPTimeout       = flag.Duration("ml-tcp-timeout", 0, "memberlist TCPTimeout. Timeout for TCP probes/push-pull. 0 = stock default (LAN: 10s)")
+		mlSuspicionMult    = flag.Int("ml-suspicion-mult", 0, "memberlist SuspicionMult. Multiplier for suspect timeout, raise to tolerate transient failures. 0 = stock default (LAN: 4)")
+		mlIndirectChecks   = flag.Int("ml-indirect-checks", 0, "memberlist IndirectChecks. Number of nodes to ask for indirect probes. 0 = stock default (LAN: 3)")
+
+		// Gate the per-reconcile "nodeAssigned" Kubernetes Event.
+		//   "always"        - one event per successful reconcile, per protocol.
+		//   "on-transition" - emit only when announce state flips
+		//                     not-announced -> announced.
+		//   "disabled"      - never emit.
+		eventNodeAssignedMode = flag.String("event-nodeassigned-mode", "always", `gate the "nodeAssigned" Kubernetes Event. one of: "always", "on-transition", "disabled"`)
+
+		// Skip starting the ServiceBGPStatus reconciler. Existing
+		// ServiceBGPStatus objects are owned by the speaker pod via
+		// ownerReference and are garbage-collected by Kubernetes once the
+		// speaker pod is replaced (rolling restart).
+		disableBGPStatusController = flag.Bool("disable-bgp-status-controller", false, "do not start the ServiceBGPStatus reconciler. Existing ServiceBGPStatus objects are GC'd by Kubernetes via ownerReference once the speaker pod that owns them is deleted (rolling restart)")
 	)
 	flag.Parse()
+
+	emitMode, err := parseEventEmitMode(*eventNodeAssignedMode)
+	if err != nil {
+		fmt.Printf("invalid --event-nodeassigned-mode: %s\n", err)
+		os.Exit(1)
+	}
 
 	// Note: Changing the MetalLB BGP implementation type should be considered
 	//       experimental.
@@ -143,7 +172,22 @@ func main() {
 		mlSecret = string(mlSecretBytes)
 	}
 
-	sList, err := speakerlist.New(logger, *myNode, *mlBindAddr, *mlBindPort, mlSecret, *namespace, *mlLabels, *mlWANConfig, stopCh)
+	sList, err := speakerlist.New(logger, speakerlist.Config{
+		NodeName:         *myNode,
+		BindAddr:         *mlBindAddr,
+		BindPort:         *mlBindPort,
+		Secret:           mlSecret,
+		Namespace:        *namespace,
+		Labels:           *mlLabels,
+		WANNetwork:       *mlWANConfig,
+		ProbeTimeout:     *mlProbeTimeout,
+		ProbeInterval:    *mlProbeInterval,
+		GossipInterval:   *mlGossipInterval,
+		PushPullInterval: *mlPushPullInterval,
+		TCPTimeout:       *mlTCPTimeout,
+		SuspicionMult:    *mlSuspicionMult,
+		IndirectChecks:   *mlIndirectChecks,
+	}, stopCh)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -160,7 +204,29 @@ func main() {
 	}
 
 	l2StatusChan := make(chan event.GenericEvent)
-	bgpStatusChan := make(chan event.GenericEvent)
+
+	// When --disable-bgp-status-controller is set, the
+	// ServiceBGPStatusReconciler is not started (see k8s.New). The bgp
+	// controller still calls adsChangedCallback for every advertisement
+	// change; an unbuffered chan write with no consumer would deadlock the
+	// BGP path (notifyAdsChanged is called on every SetBalancer/peer
+	// change). To avoid that, leave both the channel and the callback nil;
+	// the callback is nil-checked in (*bgpController).notifyAdsChanged.
+	var bgpStatusChan chan event.GenericEvent
+	var bgpAdsChangedCallback func(string)
+	if !*disableBGPStatusController {
+		bgpStatusChan = make(chan event.GenericEvent)
+		bgpAdsChangedCallback = func(key string) {
+			ns, name, err := cache.SplitMetaNamespaceKey(key)
+			if err != nil {
+				level.Debug(logger).Log("op", "bgpStatusEvent", "error", err, "msg", "failed to parse key as namespaced name", "key", key)
+				return
+			}
+			bgpStatusChan <- controllers.NewBGPStatusEvent(ns, name)
+		}
+	} else {
+		level.Info(logger).Log("op", "startup", "msg", "ServiceBGPStatus reconciler disabled via --disable-bgp-status-controller; existing objects will be GC'd via ownerReference on rolling restart")
+	}
 
 	// Setup all clients and speakers, config decides what is being done runtime.
 	ctrl, err := newController(controllerConfig{
@@ -173,17 +239,11 @@ func main() {
 		bgpType:                bgpImplementation(bgpType),
 		InterfaceExcludeRegexp: interfacesToExclude,
 		IgnoreExcludeLB:        *ignoreLBExclude,
+		EventNodeAssignedMode:  emitMode,
 		Layer2StatusChange: func(namespacedName types.NamespacedName) {
 			l2StatusChan <- controllers.NewL2StatusEvent(namespacedName.Namespace, namespacedName.Name)
 		},
-		BGPAdsChangedCallback: func(key string) {
-			ns, name, err := cache.SplitMetaNamespaceKey(key)
-			if err != nil {
-				level.Debug(logger).Log("op", "bgpStatusEvent", "error", err, "msg", "failed to parse key as namespaced name", "key", key)
-				return
-			}
-			bgpStatusChan <- controllers.NewBGPStatusEvent(ns, name)
-		},
+		BGPAdsChangedCallback: bgpAdsChangedCallback,
 	})
 	if err != nil {
 		level.Error(logger).Log("op", "startup", "error", err, "msg", "failed to create MetalLB controller")
@@ -245,6 +305,30 @@ func main() {
 	}
 }
 
+// eventEmitMode controls how often the speaker emits the "nodeAssigned"
+// Kubernetes Event during service reconciliation. See --event-nodeassigned-mode
+// in main() for the user-facing strings.
+type eventEmitMode int
+
+const (
+	eventEmitAlways eventEmitMode = iota
+	eventEmitOnTransition
+	eventEmitDisabled
+)
+
+func parseEventEmitMode(s string) (eventEmitMode, error) {
+	switch s {
+	case "always":
+		return eventEmitAlways, nil
+	case "on-transition":
+		return eventEmitOnTransition, nil
+	case "disabled":
+		return eventEmitDisabled, nil
+	default:
+		return eventEmitAlways, fmt.Errorf("unknown mode %q, want one of: always, on-transition, disabled", s)
+	}
+}
+
 type controller struct {
 	myNode  string
 	nodes   map[string]*v1.Node
@@ -261,6 +345,11 @@ type controller struct {
 
 	layer2StatusFetchFunc controllers.L2StatusFetcher
 	bgpPeersFetcher       controllers.PeersForService
+
+	// Gate the per-reconcile "nodeAssigned" Kubernetes Event. Zero value
+	// (eventEmitAlways) preserves the default behavior for tests that
+	// build a *controller directly without going through newController.
+	eventNodeAssignedMode eventEmitMode
 }
 
 type controllerConfig struct {
@@ -280,6 +369,7 @@ type controllerConfig struct {
 	AnnouncedInterfacesToExclude []string `yaml:"announcedInterfacesToExclude"`
 	InterfaceExcludeRegexp       *regexp.Regexp
 	IgnoreExcludeLB              bool
+	EventNodeAssignedMode        eventEmitMode
 	Layer2StatusChange           func(types.NamespacedName)
 	BGPAdsChangedCallback        func(string)
 }
@@ -336,6 +426,7 @@ func newController(cfg controllerConfig) (*controller, error) {
 		protocols:             protocols,
 		layer2StatusFetchFunc: layer2StatusFetcher,
 		bgpPeersFetcher:       bgpPeersFetcher,
+		eventNodeAssignedMode: cfg.EventNodeAssignedMode,
 	}
 	ret.announced[config.BGP] = map[string]bool{}
 	ret.announced[config.Layer2] = map[string]bool{}
@@ -428,7 +519,10 @@ func (c *controller) handleService(l log.Logger,
 		return controllers.SyncStateError
 	}
 
-	if !c.announced[protocol][name] {
+	// Capture the prior state BEFORE flipping c.announced so we can decide
+	// whether this reconcile is a not-announced -> announced transition.
+	wasAnnounced := c.announced[protocol][name]
+	if !wasAnnounced {
 		c.announced[protocol][name] = true
 		c.svcIPs[name] = lbIPs
 	}
@@ -442,7 +536,23 @@ func (c *controller) handleService(l log.Logger,
 		}).Set(1)
 	}
 	level.Info(l).Log("event", "serviceAnnounced", "msg", "service has IP, announcing", "protocol", protocol)
-	c.client.Infof(svc, "nodeAssigned", "announcing from node %q with protocol %q", c.myNode, protocol)
+
+	// Gate the apiserver-bound Kubernetes Event. The structured log line
+	// above is always emitted (cheap, local). The Event is gated to bound
+	// the rate of PATCH events on the events resource at large cluster
+	// scale, where this code path runs hundreds of times per minute.
+	emitEvent := false
+	switch c.eventNodeAssignedMode {
+	case eventEmitAlways:
+		emitEvent = true
+	case eventEmitOnTransition:
+		emitEvent = !wasAnnounced
+	case eventEmitDisabled:
+		emitEvent = false
+	}
+	if emitEvent {
+		c.client.Infof(svc, "nodeAssigned", "announcing from node %q with protocol %q", c.myNode, protocol)
+	}
 	return controllers.SyncStateSuccess
 }
 

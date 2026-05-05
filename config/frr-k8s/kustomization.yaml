@@ -3,6 +3,14 @@ kind: Kustomization
 resources:
 - https://github.com/metallb/frr-k8s/config/default/?timeout=120&ref=v0.0.21
 - ../native
+images:
+  # The kubebuilder GCR registry stopped serving
+  # gcr.io/kubebuilder/kube-rbac-proxy. Redirect to the
+  # kubernetes-sigs mirror on registry.k8s.io that ships the same
+  # images; the original tag from the upstream frr-k8s manifests
+  # is preserved.
+  - name: gcr.io/kubebuilder/kube-rbac-proxy
+    newName: registry.k8s.io/kubebuilder/kube-rbac-proxy
 patchesStrategicMerge:
 - speaker-patch.yaml
 - controller-patch.yaml

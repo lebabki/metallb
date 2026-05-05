@@ -32,6 +32,28 @@ type SpeakerListInfo struct {
 	Disabled bool
 }
 
+// Config holds parameters for constructing a SpeakerList. Memberlist tunables
+// (ProbeTimeout, ProbeInterval, GossipInterval, PushPullInterval, TCPTimeout,
+// SuspicionMult, IndirectChecks) are optional: a zero value leaves the
+// memberlist LAN/WAN default in place.
+type Config struct {
+	NodeName   string
+	BindAddr   string
+	BindPort   string
+	Secret     string
+	Namespace  string
+	Labels     string
+	WANNetwork bool
+
+	ProbeTimeout     time.Duration
+	ProbeInterval    time.Duration
+	GossipInterval   time.Duration
+	PushPullInterval time.Duration
+	TCPTimeout       time.Duration
+	SuspicionMult    int
+	IndirectChecks   int
+}
+
 // SpeakerList represents a list of healthy speakers.
 type SpeakerList struct {
 	l         log.Logger
@@ -46,20 +68,25 @@ type SpeakerList struct {
 	ml        *memberlist.Memberlist
 	mlJoinCh  chan struct{}
 
+	// myNodeName is captured separately so memberlist metrics can use it as a
+	// stable label even after sl.ml.Members() reflects departures.
+	myNodeName string
+
 	mlMux        sync.Mutex // Mutex for mlSpeakerIPs.
 	mlSpeakerIPs []string   // Speaker pod IPs.
 }
 
 // New creates a new SpeakerList and returns a pointer to it.
-func New(logger log.Logger, nodeName, bindAddr, bindPort, secret, namespace, labels string, WANNetwork bool, stopCh chan struct{}) (*SpeakerList, error) {
+func New(logger log.Logger, cfg Config, stopCh chan struct{}) (*SpeakerList, error) {
 	sl := SpeakerList{
-		l:         logger,
-		stopCh:    stopCh,
-		namespace: namespace,
-		labels:    labels,
+		l:          logger,
+		stopCh:     stopCh,
+		namespace:  cfg.Namespace,
+		labels:     cfg.Labels,
+		myNodeName: cfg.NodeName,
 	}
 
-	if labels == "" || bindAddr == "" {
+	if cfg.Labels == "" || cfg.BindAddr == "" {
 		level.Info(logger).Log("op", "startup", "msg", "not starting fast dead node detection (memberlist), need ml-bindaddr / ml-labels config")
 		level.Info(logger).Log("op", "startup", "msg", "when memberlist is disabled, the speaker pods must run on all nodes")
 		sl.disabled = true
@@ -67,16 +94,16 @@ func New(logger log.Logger, nodeName, bindAddr, bindPort, secret, namespace, lab
 	}
 
 	mconfig := memberlist.DefaultLANConfig()
-	if WANNetwork {
+	if cfg.WANNetwork {
 		mconfig = memberlist.DefaultWANConfig()
 	}
 
 	// mconfig.Name MUST be equal to the spec.nodeName field of the speaker pod as we match it
 	// against the nodeName field of Endpoint objects inside usableNodes().
-	mconfig.Name = nodeName
-	mconfig.BindAddr = bindAddr
-	if bindPort != "" {
-		mlport, err := strconv.Atoi(bindPort)
+	mconfig.Name = cfg.NodeName
+	mconfig.BindAddr = cfg.BindAddr
+	if cfg.BindPort != "" {
+		mlport, err := strconv.Atoi(cfg.BindPort)
 		if err != nil {
 			level.Error(logger).Log("op", "startup", "error", "unable to parse ml-bindport", "msg", err)
 			return nil, err
@@ -85,11 +112,35 @@ func New(logger log.Logger, nodeName, bindAddr, bindPort, secret, namespace, lab
 		mconfig.AdvertisePort = mlport
 	}
 	mconfig.Logger = newMemberlistLogger(sl.l)
-	if secret == "" {
+	if cfg.Secret == "" {
 		level.Warn(logger).Log("op", "startup", "warning", "no ml-secret-key set, memberlist traffic will not be encrypted")
 	} else {
 		sha := sha256.New()
-		mconfig.SecretKey = sha.Sum([]byte(secret))[:32]
+		mconfig.SecretKey = sha.Sum([]byte(cfg.Secret))[:32]
+	}
+
+	// Override memberlist tunables when explicitly requested via cmdline
+	// flags. A zero value leaves the LAN/WAN default in place.
+	if cfg.ProbeTimeout > 0 {
+		mconfig.ProbeTimeout = cfg.ProbeTimeout
+	}
+	if cfg.ProbeInterval > 0 {
+		mconfig.ProbeInterval = cfg.ProbeInterval
+	}
+	if cfg.GossipInterval > 0 {
+		mconfig.GossipInterval = cfg.GossipInterval
+	}
+	if cfg.PushPullInterval > 0 {
+		mconfig.PushPullInterval = cfg.PushPullInterval
+	}
+	if cfg.TCPTimeout > 0 {
+		mconfig.TCPTimeout = cfg.TCPTimeout
+	}
+	if cfg.SuspicionMult > 0 {
+		mconfig.SuspicionMult = cfg.SuspicionMult
+	}
+	if cfg.IndirectChecks > 0 {
+		mconfig.IndirectChecks = cfg.IndirectChecks
 	}
 
 	// This channel is used by the Rejoin() method which runs on k8s node
@@ -328,7 +379,21 @@ func (sl *SpeakerList) memberlistWatchEvents() {
 	for {
 		select {
 		case e := <-sl.mlEventCh:
-			level.Info(sl.l).Log("msg", "node event - forcing sync", "node addr", e.Node.Addr, "node name", e.Node.Name, "node event", event2String(e.Event))
+			eventType := event2String(e.Event)
+			level.Info(sl.l).Log("msg", "node event - forcing sync", "node addr", e.Node.Addr, "node name", e.Node.Name, "node event", eventType)
+
+			// Record membership churn for alerting on flapping nodes.
+			stats.nodeEvents.WithLabelValues(eventType, e.Node.Name).Inc()
+			switch e.Event {
+			case memberlist.NodeJoin:
+				stats.transitions.WithLabelValues("gain", sl.myNodeName).Inc()
+			case memberlist.NodeLeave:
+				stats.transitions.WithLabelValues("loss", sl.myNodeName).Inc()
+			}
+			// sl.ml is non-nil here -- this goroutine is only started by
+			// Start() if memberlist was successfully created in New().
+			stats.members.WithLabelValues(sl.myNodeName).Set(float64(len(sl.ml.Members())))
+
 			sl.client.ForceSync()
 		case <-sl.stopCh:
 			return
